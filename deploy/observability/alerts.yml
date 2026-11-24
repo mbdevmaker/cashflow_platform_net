@@ -1,0 +1,46 @@
+groups:
+  - name: cashflow-platform
+    rules:
+      - alert: OutboxMensagemAntiga
+        expr: max(outbox_oldest_age_seconds) > 30
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "Outbox com mensagem pendente há mais de 30s (RabbitMQ indisponível ou publisher parado?)"
+
+      - alert: ConsolidacaoLagAcimaDoSLO
+        expr: histogram_quantile(0.95, sum by (le) (rate(consolidation_lag_seconds_bucket[1m]))) > 5
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "p95 do lag da consolidação acima de 5s"
+
+      - alert: ErrorQueueComMensagens
+        expr: sum(rabbitmq_detailed_queue_messages{queue=~".*_error"}) > 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "Há eventos financeiros na error queue — seguir runbook de reprocessamento"
+
+      - alert: FilaDeConsolidacaoCrescendo
+        expr: sum(rabbitmq_detailed_queue_messages_ready{queue="consolidation.cash-transaction-created"}) > 1000
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Backlog crescente na fila de consolidação"
+
+      - alert: TaxaDeErroApi
+        expr: |
+          sum by (job) (rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[1m]))
+            / clamp_min(sum by (job) (rate(http_server_request_duration_seconds_count[1m])), 1e-9) > 0.05
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Taxa de erro 5xx acima de 5% em {{ $labels.job }}"
+
+      - alert: ServicoFora
+        expr: up == 0
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }} sem resposta ao scrape"

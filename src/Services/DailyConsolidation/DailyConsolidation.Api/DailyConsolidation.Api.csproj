@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <RootNamespace>DailyConsolidation.Api</RootNamespace>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\DailyConsolidation.Application\DailyConsolidation.Application.csproj" />
+    <ProjectReference Include="..\DailyConsolidation.Infrastructure\DailyConsolidation.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\..\BuildingBlocks\Observability\Observability.csproj" />
+    <ProjectReference Include="..\..\..\BuildingBlocks\Security\Security.csproj" />
+  </ItemGroup>
+</Project>

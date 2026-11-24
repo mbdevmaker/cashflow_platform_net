@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: cashflow
+    folder: Cash Flow Platform
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

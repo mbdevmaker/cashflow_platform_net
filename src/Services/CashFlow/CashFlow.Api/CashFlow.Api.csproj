@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <RootNamespace>CashFlow.Api</RootNamespace>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CashFlow.Application\CashFlow.Application.csproj" />
+    <ProjectReference Include="..\CashFlow.Infrastructure\CashFlow.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\..\BuildingBlocks\Observability\Observability.csproj" />
+    <ProjectReference Include="..\..\..\BuildingBlocks\Security\Security.csproj" />
+  </ItemGroup>
+</Project>

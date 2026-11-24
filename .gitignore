@@ -1,0 +1,11 @@
+bin/
+obj/
+.vs/
+.vscode/
+.idea/
+*.user
+TestResults/
+.env
+
+# Enunciado do desafio (não publicar)
+Desafio - Arq*.pdf

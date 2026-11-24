@@ -1,0 +1,207 @@
+name: cashflow-platform
+
+# Valores padrão permitem subir sem .env; para customizar: cp .env.example .env
+
+x-cashflow-image: &cashflow-image
+  image: cashflow-platform/cashflow:local
+  build:
+    context: .
+    dockerfile: deploy/docker/Dockerfile
+    args:
+      PROJECT: src/Services/CashFlow/CashFlow.Api/CashFlow.Api.csproj
+      APP_DLL: CashFlow.Api.dll
+
+x-consolidation-image: &consolidation-image
+  image: cashflow-platform/consolidation:local
+  build:
+    context: .
+    dockerfile: deploy/docker/Dockerfile
+    args:
+      PROJECT: src/Services/DailyConsolidation/DailyConsolidation.Api/DailyConsolidation.Api.csproj
+      APP_DLL: DailyConsolidation.Api.dll
+
+x-dotnet-env: &dotnet-env
+  ASPNETCORE_ENVIRONMENT: Development
+  Authentication__Mode: Development
+  Authentication__DevSigningKey: ${DEV_JWT_SIGNING_KEY:-dev-only-signing-key-change-me-0123456789abcdef}
+  RabbitMq__Host: rabbitmq
+  RabbitMq__VirtualHost: ${RABBITMQ_VHOST:-cashflow}
+  RabbitMq__Username: ${RABBITMQ_USER:-cashflow}
+  RabbitMq__Password: ${RABBITMQ_PASSWORD:-cashflow_dev_pwd}
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+
+x-cashflow-env: &cashflow-env
+  <<: *dotnet-env
+  ConnectionStrings__CashFlow: Host=postgres-cashflow;Port=5432;Database=cashflow;Username=${POSTGRES_CASHFLOW_USER:-cashflow};Password=${POSTGRES_CASHFLOW_PASSWORD:-cashflow_dev_pwd};Maximum Pool Size=50;Timeout=5;Command Timeout=15
+
+x-consolidation-env: &consolidation-env
+  <<: *dotnet-env
+  ConnectionStrings__Consolidation: Host=postgres-consolidation;Port=5432;Database=consolidation;Username=${POSTGRES_CONSOLIDATION_USER:-consolidation};Password=${POSTGRES_CONSOLIDATION_PASSWORD:-consolidation_dev_pwd};Maximum Pool Size=80;Timeout=5;Command Timeout=15
+  ConnectionStrings__Redis: redis:6379
+
+services:
+  # ---------------- Infraestrutura ----------------
+  postgres-cashflow:
+    image: postgres:17.12-alpine
+    environment:
+      POSTGRES_DB: cashflow
+      POSTGRES_USER: ${POSTGRES_CASHFLOW_USER:-cashflow}
+      POSTGRES_PASSWORD: ${POSTGRES_CASHFLOW_PASSWORD:-cashflow_dev_pwd}
+    volumes: [pg-cashflow-data:/var/lib/postgresql/data]
+    ports: ["127.0.0.1:${POSTGRES_CASHFLOW_HOST_PORT:-5432}:5432"]
+    networks: [cashflow-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d cashflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  postgres-consolidation:
+    image: postgres:17.12-alpine
+    environment:
+      POSTGRES_DB: consolidation
+      POSTGRES_USER: ${POSTGRES_CONSOLIDATION_USER:-consolidation}
+      POSTGRES_PASSWORD: ${POSTGRES_CONSOLIDATION_PASSWORD:-consolidation_dev_pwd}
+    volumes: [pg-consolidation-data:/var/lib/postgresql/data]
+    ports: ["127.0.0.1:${POSTGRES_CONSOLIDATION_HOST_PORT:-5433}:5432"]
+    networks: [consolidation-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d consolidation"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:4.3.8-management-alpine
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-cashflow}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-cashflow_dev_pwd}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-cashflow}
+    volumes: [rabbitmq-data:/var/lib/rabbitmq]
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "15672:15672"   # painel de administração
+    networks: [cashflow-net, consolidation-net]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:8.8-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports: ["127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"]
+    networks: [consolidation-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ---------------- Cash Flow Service ----------------
+  cashflow-migrator:
+    <<: *cashflow-image
+    command: ["--migrate"]
+    environment: *cashflow-env
+    networks: [cashflow-net]
+    restart: "no"
+    healthcheck: { disable: true }
+    depends_on:
+      postgres-cashflow: { condition: service_healthy }
+
+  cashflow-api:
+    <<: *cashflow-image
+    environment:
+      <<: *cashflow-env
+      Service__Role: api
+    ports: ["8080:8080"]
+    networks: [cashflow-net]
+    restart: unless-stopped
+    depends_on:
+      cashflow-migrator: { condition: service_completed_successfully }
+
+  cashflow-outbox-publisher:
+    <<: *cashflow-image
+    environment:
+      <<: *cashflow-env
+      Service__Role: outbox-publisher
+    networks: [cashflow-net]
+    restart: unless-stopped
+    depends_on:
+      cashflow-migrator: { condition: service_completed_successfully }
+      rabbitmq: { condition: service_healthy }
+
+  # ---------------- Daily Consolidation Service ----------------
+  consolidation-migrator:
+    <<: *consolidation-image
+    command: ["--migrate"]
+    environment: *consolidation-env
+    networks: [consolidation-net]
+    restart: "no"
+    healthcheck: { disable: true }
+    depends_on:
+      postgres-consolidation: { condition: service_healthy }
+
+  daily-consolidation-api:
+    <<: *consolidation-image
+    environment:
+      <<: *consolidation-env
+      Service__Role: api
+    ports: ["8081:8080"]
+    networks: [consolidation-net]
+    restart: unless-stopped
+    depends_on:
+      consolidation-migrator: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
+  daily-consolidation-consumer:
+    <<: *consolidation-image
+    environment:
+      <<: *consolidation-env
+      Service__Role: consumer
+    networks: [consolidation-net]
+    restart: unless-stopped
+    depends_on:
+      consolidation-migrator: { condition: service_completed_successfully }
+      rabbitmq: { condition: service_healthy }
+
+  # ---------------- Observabilidade ----------------
+  jaeger:
+    image: jaegertracing/jaeger:2.22.0
+    ports:
+      - "16686:16686"  # UI
+    networks: [cashflow-net, consolidation-net, observability-net]
+
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2d"]
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports: ["9090:9090"]
+    networks: [cashflow-net, consolidation-net, observability-net]
+
+  grafana:
+    image: grafana/grafana:13.0.13
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    networks: [observability-net]
+    depends_on: [prometheus, jaeger]
+
+networks:
+  cashflow-net:
+  consolidation-net:
+  observability-net:
+
+volumes:
+  pg-cashflow-data:
+  pg-consolidation-data:
+  rabbitmq-data:

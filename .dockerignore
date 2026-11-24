@@ -1,0 +1,8 @@
+**/bin/
+**/obj/
+**/.vs/
+**/TestResults/
+docs/
+*.pdf
+.env
+.git/
